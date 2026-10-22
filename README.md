@@ -25,8 +25,47 @@
 | **Fan Bug Fixed** | Ghost sensors TNT2–TNT5 that forced fans to 100% are now disabled by default for fan curves (still visible in the GUI). |
 | **Auto-Calibration Wizard** | Click **"Auto-Calibrate & Diagnose..."** in the tray menu. OmenMon runs a guided 4-step fan stress sweep, scans the EC for fan-tachometer registers (16-bit LE, period-encoded, or direct-multiplier), applies the discovered layout to the live session, and copies a Markdown report to the clipboard for upstream contribution. The override survives a restart via a sidecar XML. |
 | **`-Probe` CLI verb** | `OmenMon.exe -Probe` generates a full WMI + BIOS + EC snapshot as Markdown — ideal for bug reports. |
+| **Fan Curve Editor** | **Fan → Fan Curve Editor...** in the tray menu opens a graphical multi-point fan-curve editor: drag nodes on a live graph, set per-point CPU/GPU levels, preview the curve on the real hardware, and save it as a normal `<FanProgram>` profile. Built-in freeze guard for boards that latch their EC at maximum fan. |
 
 See [CHANGELOG.md](CHANGELOG.md) for the full release notes, [ARCHITECTURE.md](ARCHITECTURE.md) for design rationale, and [MODIFICATIONS.md](MODIFICATIONS.md) for GPLv3 compliance information.
+
+## Fan Curve Editor
+
+Upstream OmenMon only lets you pick a fan **level** (0–55) or a coarse thermal **mode**; there is no way to describe "at 50 °C run at 20 %, at 70 °C run at 55 %" without hand-editing `OmenMon.xml`. Reborn adds a graphical editor for exactly that.
+
+Open it from the tray icon menu: **Fan → Fan Curve Editor...**
+
+**What you can do**
+
+- **Draw the curve on a graph.** The canvas renders the curve as a **step function**, because that is how the embedded controller actually behaves: the fan holds a level until the next threshold is reached. A translucent fill shows the area under the curve, and a dashed live overlay tracks the current CPU and GPU temperatures.
+- **Edit points directly.** Drag a node to move it, click empty space to add a point, press `Delete` to remove one, and use the arrow keys to nudge the selected point by 1 °C or 1 level. Every change is reflected immediately in the numeric editors and in the resolved output.
+- **Set CPU and GPU levels independently.** Each point carries a separate CPU and GPU fan level, matching the two-fan layout of Omen and Victus laptops.
+- **Preview on real hardware.** Tick **Run preview** and the curve is applied to the EC while you edit, so you can hear and feel the result before saving. Untick it (or close the dialog) and the previous program is restored.
+- **Manage profiles.** Profiles are ordinary `<FanProgram>` entries in `OmenMon.xml`, so they show up in the existing tray menu, survive restarts, and can be imported/exported with the rest of your configuration. Use **New**, **Rename**, and **Delete** inside the dialog. Deleting a profile that `FanProgramDefault`/`FanProgramDefaultAlt` still points at — or the last remaining profile — is refused.
+- **Stay safe on freeze-prone boards.** On models listed in `FanArray.HasMaxFanFreeze` (where commanding the absolute maximum fan level can latch the EC until reboot), the editor automatically lowers the writable ceiling by one level and shows a red warning. Lifting that cap requires the same `GuiOp.ConfirmMaxFanIfRisky` opt-in that the rest of the app uses.
+
+**How it is built**
+
+| File | Responsibility |
+|------|----------------|
+| `Hardware/FanCurve.cs` | Pure, dependency-free curve mathematics — lookup, validation, clamping, freeze-guard ceiling, and round-tripping to/from the `<FanProgram>` level list. Bit-for-bit compatible with `FanProgram.GetTemperatureLevel`, including the bitwise-complement insertion-point convention. |
+| `App/Gui/GuiFanCurveCanvas.cs` | Custom-painted `Panel` that renders the step curve and handles mouse/keyboard node editing. |
+| `App/Gui/GuiFormFanCurve.cs` | The dialog itself: profile management, live read-out, preview toggle, dirty-state guard. |
+| `Tests/OmenMon.Tests/FanCurveTests.cs` | 41 tests covering parity with the existing lookup over 0–130 °C, clamp-below-curve, stepwise behaviour, the freeze guard, round-tripping, and rejection of duplicate/empty/out-of-range input. |
+
+The dialog never holds `HardwareLock` for its lifetime — it takes it only around individual `FanProgram` start/stop calls, so hardware monitoring keeps updating while the editor is open.
+
+## How Reborn differs from upstream OmenMon
+
+| Area | Upstream OmenMon | OmenMon-Reborn |
+|------|------------------|----------------|
+| **Hardware layout** | EC register layout hardcoded for 2023 devices; wrong RPM/temperature readings, fans stuck at 100 % on other models. | XML-driven model database with per-board `KnownBoards` mappings, plus a read-only heuristic auto-detector that writes a working profile for unknown laptops. |
+| **Fan control** | Discrete levels and coarse thermal modes only. | Everything upstream has, **plus** the graphical multi-point **Fan Curve Editor** with live preview. |
+| **Ghost sensors** | TNT2–TNT5 could force fans to 100 %. | Disabled by default in fan curves (still visible in the GUI). |
+| **Diagnostics** | Manual register inspection. | **Auto-Calibration Wizard** (guided 4-step fan sweep + tachometer discovery, Markdown report to clipboard, sidecar XML override that survives restart) and `OmenMon.exe -Probe` for a full WMI + BIOS + EC snapshot. |
+| **Telemetry sharing** | None. | Optional named-pipe server (`\\.\pipe\OmenMon_FanData`) streaming JSON fan RPM, so HWiNFO/DeltaT can read fans without opening a competing EC session. |
+| **Performance modes** | Legacy L0–L8 levels. | Native OMEN Gaming Hub presets (ECO / Quiet / Default / Performance / Custom) in both GUI and CLI. |
+| **Model support** | Limited set. | Continuously extended — every issue-reported Omen/Victus board gets a native preset, `KnownBoards` mapping, and freeze-guard flag. |
 
 ---
 
